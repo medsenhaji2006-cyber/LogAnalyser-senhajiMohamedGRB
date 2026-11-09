@@ -3,21 +3,49 @@ import re
 PATTERN = re.compile(r'(\w{3})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2}).+?:\s(.+)')
 IP_PATTERN = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b')
 
-# L'tartib mohim: l'pattern l'akhass dima 9bel l'3am
-EVENT_PATTERNS = [
-    ('failed_invalid_user', re.compile(r'Failed \w+ for invalid user (\S+) from (\S+)')),
-    ('failed_password',     re.compile(r'Failed \w+ for (\S+) from (\S+)')),
-    ('accepted',            re.compile(r'Accepted \w+ for (\S+) from (\S+)')),
-    ('invalid_user',        re.compile(r'Invalid user (\S+) from (\S+)')),
-]
+IP = r'(\d{1,3}(?:\.\d{1,3}){3})'
+
+FAILED_PATTERN = re.compile(
+    r'(?:message repeated (\d+) times: \[ )?'
+    r'Failed \w+ for (invalid user )?(\S*) from ' + IP + r' port \d+'
+)
+ACCEPTED_PATTERN = re.compile(r'Accepted \w+ for (\S+) from ' + IP + r' port \d+')
+INVALID_USER_PATTERN = re.compile(r'Invalid user (\S*) from ' + IP + r' port \d+')
+DISCONNECT_PATTERN = re.compile(
+    r'(?:Connection closed by|Connection reset by|Disconnected from)'
+    r'(?: (?:authenticating|invalid) user (\S*))?'
+    r' ' + IP + r' port \d+(?: \[preauth\])?'
+)
+SESSION_OPENED_PATTERN = re.compile(
+    r'pam_unix\(sshd:session\): session opened for user ([^\s(]+)'
+)
 
 
 def classify(message):
-    for event_type, pattern in EVENT_PATTERNS:
-        m = pattern.match(message)
-        if m:
-            return event_type, m.group(1), m.group(2)
-    return 'other', None, None
+    """Retourne (event_type, user, ip, count)."""
+    m = FAILED_PATTERN.match(message)
+    if m:
+        repeated, invalid, user, ip = m.groups()
+        event_type = 'failed_invalid_user' if invalid else 'failed_password'
+        return event_type, user or None, ip, int(repeated) if repeated else 1
+
+    m = ACCEPTED_PATTERN.match(message)
+    if m:
+        return 'accepted', m.group(1), m.group(2), 1
+
+    m = INVALID_USER_PATTERN.match(message)
+    if m:
+        return 'invalid_user', m.group(1) or None, m.group(2), 1
+
+    m = DISCONNECT_PATTERN.match(message)
+    if m:
+        return 'disconnect', m.group(1) or None, m.group(2), 1
+
+    m = SESSION_OPENED_PATTERN.match(message)
+    if m:
+        return 'session_opened', m.group(1), None, 1
+
+    return 'other', None, None, 1
 
 
 def extract_from_row(row):
@@ -26,7 +54,7 @@ def extract_from_row(row):
         return None
 
     message = match.group(4)
-    event_type, user, ip = classify(message)
+    event_type, user, ip, count = classify(message)
 
     if ip is None:
         ip_match = IP_PATTERN.search(message)
@@ -40,4 +68,5 @@ def extract_from_row(row):
         'ip': ip,
         'user': user,
         'event_type': event_type,
+        'count': count,
     }
